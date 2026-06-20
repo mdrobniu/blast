@@ -296,11 +296,46 @@ struct Job {
 
 /// Run a set of jobs over the given sockets until `duration` elapses, driving
 /// the live reporter. Returns the final snapshot.
+/// Read the MikroTik `07` heartbeats off the control connection and record the
+/// peer's *actually received* byte counts (what the other side got, vs what we
+/// sent). Each message is 12 bytes: `07 XX 00 00 [secs u32 LE] [bytes u32 LE]`.
+fn read_remote_07(ctrl: &std::net::TcpStream, stats: &Stats, stop: &AtomicBool) {
+    let _ = ctrl.set_read_timeout(Some(Duration::from_millis(200)));
+    let mut s: &std::net::TcpStream = ctrl;
+    let mut acc: Vec<u8> = Vec::with_capacity(256);
+    let mut buf = [0u8; 1024];
+    while !stop.load(Ordering::Relaxed) {
+        match s.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                acc.extend_from_slice(&buf[..n]);
+                let mut i = 0;
+                while i + 12 <= acc.len() {
+                    if acc[i] == STATS_OPCODE {
+                        let b = u32::from_le_bytes([acc[i + 8], acc[i + 9], acc[i + 10], acc[i + 11]]);
+                        stats.add_remote(b as u64);
+                        i += 12;
+                    } else {
+                        i += 1; // resync
+                    }
+                }
+                acc.drain(..i);
+                if acc.len() > 4096 {
+                    acc.clear();
+                }
+            }
+            Err(ref e) if is_transient(e) => {}
+            Err(_) => break,
+        }
+    }
+}
+
 fn run_jobs(
     socks: &[Socket],
     jobs: Vec<Job>,
     r: &Resolved,
     header: String,
+    ctrl: Option<std::net::TcpStream>,
 ) -> Result<Snapshot> {
     let stats = Stats::new(r.workers.max(1));
     let stop = AtomicBool::new(false);
@@ -351,6 +386,15 @@ fn run_jobs(
             }
             stop_t.store(true, Ordering::Relaxed);
         });
+
+        // peer-received stats from the btest 07 heartbeats (compat control conn)
+        if let Some(ref ctrl) = ctrl {
+            if r.mode == Mode::Compat {
+                let stats = &stats;
+                let stop = &stop;
+                scope.spawn(move || read_remote_07(ctrl, stats, stop));
+            }
+        }
 
         // reporter (this thread)
         let mut rep = ui::make_reporter(r.ui, header, r.caps.clone(), r.duration);
@@ -413,9 +457,9 @@ pub fn run_client(r: &Resolved, server: SocketAddr) -> Result<()> {
         Protocol::Tcp => client_tcp_setup(r, data_addr)?,
     };
 
-    // Keep control alive for the duration (some servers stream 07 stats on it).
-    let _ctrl_keepalive = ctrl;
-    let snap = run_jobs(&socks, jobs, r, header)?;
+    // Hand the control connection to run_jobs: in compat it streams the 07
+    // heartbeats with the peer's actually-received byte counts.
+    let snap = run_jobs(&socks, jobs, r, header, Some(ctrl))?;
     let _ = snap;
     Ok(())
 }
@@ -447,7 +491,7 @@ fn run_client_compat_tcp(r: &Resolved, server: SocketAddr, header: String) -> Re
             push_jobs(&mut jobs, i, primary, r.direction, send_cap);
         }
     }
-    run_jobs(&socks, jobs, r, header)?;
+    run_jobs(&socks, jobs, r, header, None)?;
     Ok(())
 }
 
@@ -696,7 +740,7 @@ fn handle_session(
             push_jobs(&mut jobs, 0, 0, r.direction, send_cap);
             (vec![s], jobs)
         };
-        return run_jobs(&socks, jobs, &r, header).map(|_| ());
+        return run_jobs(&socks, jobs, &r, header, None).map(|_| ());
     }
 
     // ---- Phase 2: pre-bind data resources BEFORE the releasing ack ----
@@ -736,7 +780,7 @@ fn handle_session(
         Prebind::Tcp(dl) => server_tcp_accept(&r, dl)?,
     };
     let _ctrl_keepalive = ctrl;
-    run_jobs(&socks, jobs, &r, header)?;
+    run_jobs(&socks, jobs, &r, header, None)?;
     Ok(())
 }
 

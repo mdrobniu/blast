@@ -69,6 +69,23 @@ pub fn banner_server(caps: &Caps, listen: SocketAddr) {
     println!("  accel: {}", caps_badges(caps));
 }
 
+/// (bytes_sent_by_us, bytes_received_by_peer, loss_pct) using the peer's
+/// 07-heartbeat counter. Upload: we sent tx, peer got remote. Download: peer
+/// sent remote, we got rx.
+pub fn peer_loss(snap: &Snapshot) -> (u64, u64, f64) {
+    let (sent, received) = if snap.tx_bytes >= snap.rx_bytes {
+        (snap.tx_bytes, snap.remote_bytes)
+    } else {
+        (snap.remote_bytes, snap.rx_bytes)
+    };
+    let loss = if sent > 0 && received <= sent {
+        (sent - received) as f64 / sent as f64 * 100.0
+    } else {
+        0.0
+    };
+    (sent, received, loss)
+}
+
 // ---------------- Plain / JSON ----------------
 
 pub struct PlainReporter {
@@ -107,8 +124,14 @@ impl Reporter for PlainReporter {
         }
         self.last_line = Instant::now();
         let t = snap.elapsed;
+        // Peer-received rate from the btest 07 heartbeats (what the OTHER side got).
+        let peer = if snap.remote_rate_bps > 0.0 {
+            format!("  peer-rx {:>11}", fmt_bits(snap.remote_rate_bps))
+        } else {
+            String::new()
+        };
         println!(
-            "[{t:5.1}s] tx {:>11}  rx {:>11} | {:>10} | tot {:>9}",
+            "[{t:5.1}s] tx {:>11}  rx {:>11}{peer} | {:>10} | tot {:>9}",
             fmt_bits(rate.tx_bps),
             fmt_bits(rate.rx_bps),
             fmt_pps(rate.tx_pps + rate.rx_pps),
@@ -120,12 +143,14 @@ impl Reporter for PlainReporter {
 
     fn finish(&mut self, snap: &Snapshot) {
         let avg = snap.avg();
+        let (sent, received, loss) = peer_loss(snap);
         if self.json {
             // Minimal, dependency-free JSON.
             println!(
                 "{{\"header\":\"{}\",\"os\":\"{}\",\"cores\":{},\"seconds\":{:.3},\
                  \"tx_bytes\":{},\"rx_bytes\":{},\"tx_pkts\":{},\"rx_pkts\":{},\
                  \"avg_tx_bps\":{:.0},\"avg_rx_bps\":{:.0},\
+                 \"peer_rx_bytes\":{},\"peer_avg_bps\":{:.0},\"loss_pct\":{:.2},\
                  \"accel\":\"{}\"}}",
                 self.header.replace('"', "'"),
                 self.caps.os,
@@ -137,6 +162,9 @@ impl Reporter for PlainReporter {
                 snap.rx_pkts,
                 avg.tx_bps,
                 avg.rx_bps,
+                snap.remote_bytes,
+                snap.remote_bytes as f64 * 8.0 / snap.elapsed.max(1e-9),
+                loss,
                 caps_badges(&self.caps),
             );
         } else {
@@ -158,6 +186,14 @@ impl Reporter for PlainReporter {
                 fmt_bytes(snap.rx_bytes as f64),
                 fmt_pps(avg.rx_pps)
             );
+            if snap.remote_bytes > 0 {
+                println!(
+                    "  peer received {} of {} sent  ->  {:.2}% loss",
+                    fmt_bytes(received as f64),
+                    fmt_bytes(sent as f64),
+                    loss
+                );
+            }
         }
         let _ = self.duration;
     }
@@ -297,6 +333,15 @@ impl Reporter for TuiReporter {
             fmt_bytes(snap.rx_bytes as f64),
         );
         println!("  packets: tx {}  rx {}", snap.tx_pkts, snap.rx_pkts);
+        if snap.remote_bytes > 0 {
+            let (sent, received, loss) = peer_loss(snap);
+            println!(
+                "  peer received {} of {} sent  ->  {:.2}% loss",
+                fmt_bytes(received as f64),
+                fmt_bytes(sent as f64),
+                loss
+            );
+        }
     }
 }
 

@@ -19,6 +19,11 @@ pub struct Cell {
 
 pub struct Stats {
     cells: Vec<CachePadded<Cell>>,
+    /// Peer-reported received bytes (cumulative) from the btest `07` heartbeats -
+    /// i.e. what the OTHER side actually got, which differs from what we sent.
+    remote_bytes: CachePadded<AtomicU64>,
+    /// Latest peer-reported interval rate, bits/sec.
+    remote_rate_bps: CachePadded<AtomicU64>,
     pub start: Instant,
 }
 
@@ -30,8 +35,21 @@ impl Stats {
         }
         Arc::new(Stats {
             cells,
+            remote_bytes: CachePadded::new(AtomicU64::new(0)),
+            remote_rate_bps: CachePadded::new(AtomicU64::new(0)),
             start: Instant::now(),
         })
+    }
+
+    /// Record one peer heartbeat: `interval_bytes` received by the peer in ~1s.
+    pub fn add_remote(&self, interval_bytes: u64) {
+        self.remote_bytes.fetch_add(interval_bytes, Ordering::Relaxed);
+        self.remote_rate_bps
+            .store(interval_bytes.saturating_mul(8), Ordering::Relaxed);
+    }
+
+    pub fn has_remote(&self) -> bool {
+        self.remote_bytes.load(Ordering::Relaxed) > 0
     }
 
     #[inline(always)]
@@ -76,6 +94,8 @@ impl Stats {
             s.tx_pkts += c.tx_pkts.load(Ordering::Relaxed);
             s.rx_pkts += c.rx_pkts.load(Ordering::Relaxed);
         }
+        s.remote_bytes = self.remote_bytes.load(Ordering::Relaxed);
+        s.remote_rate_bps = self.remote_rate_bps.load(Ordering::Relaxed) as f64;
         s
     }
 }
@@ -87,6 +107,9 @@ pub struct Snapshot {
     pub tx_pkts: u64,
     pub rx_pkts: u64,
     pub elapsed: f64,
+    /// Peer-reported received bytes (cumulative) and latest interval rate (bits/s).
+    pub remote_bytes: u64,
+    pub remote_rate_bps: f64,
 }
 
 /// Instantaneous rate between two snapshots, plus the deltas.
