@@ -531,8 +531,9 @@ fn client_handshake_compat(ctrl: &mut std::net::TcpStream, r: &Resolved) -> Resu
         conn_count: r.workers as u8,
         remote_size: r.udp_datagram as u16,
         local_size: r.udp_datagram as u16,
-        remote_speed: r.remote_cap.min(u32::MAX as u64) as u32,
-        local_speed: r.local_cap.min(u32::MAX as u64) as u32,
+        // MikroTik's wire speed fields are bits/sec; our caps are bytes/sec.
+        remote_speed: r.remote_cap.saturating_mul(8).min(u32::MAX as u64) as u32,
+        local_speed: r.local_cap.saturating_mul(8).min(u32::MAX as u64) as u32,
     };
     ctrl.write_all(&cmd.to_bytes())?;
 

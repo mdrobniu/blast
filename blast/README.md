@@ -106,13 +106,20 @@ blast speedtest HOST -P 4 -d 10             # client: ping + download + upload
 - **Interactive terminal:** a live `ratatui` dashboard (throughput gauges, sparklines,
   per-worker bars, progress). Press `q`/`Esc` to stop early.
 - **Piped / CI:** automatically falls back to `--plain` lines; `--json` for one summary.
+- **Real loss (compat):** for MikroTik tests blast reads the server's `07` heartbeats
+  and shows both what we **sent** and what the peer **actually received**, plus loss %
+  - e.g. blasting 1.2 Gbps UDP at a device that ingests ~475 Mbps reports ~61% loss.
 
 ## Status & roadmap
 
 | Area | State |
 |------|-------|
-| btest compat - TCP | verified vs live RouterOS (71/502 Mbps) |
-| btest compat - UDP | verified vs live RouterOS (135 Mbps down / ~475 Mbps up) - reads the server's advertised base port + sequenced datagrams |
+| btest compat - TCP | verified vs live RouterOS 7.22 (71/502 Mbps) |
+| btest compat - UDP | verified vs live RouterOS 7.22 (135 Mbps down / ~475 Mbps up) - reads the server's advertised base port + sequenced datagrams |
+| btest compat - rate limits | verified vs live device (TCP+UDP, both directions; wire speed field is bits/sec) |
+| btest compat - packet sizes | verified on the wire (64-1432 B datagrams) |
+| btest compat - peer-received / loss | shown live from the server's 07 heartbeats (sent vs really-received, loss%) |
+| btest compat - auth | detects the method; MD5 (RouterOS <6.43) implemented; EC-SRP5 (>=6.43, e.g. RouterOS 7.22) detected + reported, not yet implemented |
 | btest turbo - TCP/UDP, tx/rx/both, multi-worker | working, accelerated |
 | iperf3 client - TCP single/multi, fwd/reverse | verified vs `iperf3 -s` |
 | iperf3 client - UDP | data flows; server-side loss stats not yet matched |

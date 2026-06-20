@@ -73,6 +73,10 @@ pub fn banner_server(caps: &Caps, listen: SocketAddr) {
 /// 07-heartbeat counter. Upload: we sent tx, peer got remote. Download: peer
 /// sent remote, we got rx.
 pub fn peer_loss(snap: &Snapshot) -> (u64, u64, f64) {
+    // No peer counter (e.g. TCP, where data rides the control conn) => no loss figure.
+    if snap.remote_bytes == 0 {
+        return (snap.tx_bytes.max(snap.rx_bytes), 0, 0.0);
+    }
     let (sent, received) = if snap.tx_bytes >= snap.rx_bytes {
         (snap.tx_bytes, snap.remote_bytes)
     } else {

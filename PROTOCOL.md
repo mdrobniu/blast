@@ -45,8 +45,13 @@ reverse-engineering, consistent with the binary but not byte-verified here.
 | 3   | 1  | `connectionCount`| number of parallel TCP connections                 |
 | 4   | 2  | `remoteSize`     | u16 LE -- remote tx packet/buffer size             |
 | 6   | 2  | `localSize`      | u16 LE -- local tx packet/buffer size              |
-| 8   | 4  | `remoteSpeed`    | u32 LE -- remote tx cap, bytes/s (0 = unlimited)   |
-| 12  | 4  | `localSpeed`     | u32 LE -- local tx cap, bytes/s (0 = unlimited)    |
+| 8   | 4  | `remoteSpeed`    | u32 LE -- remote tx cap, **bits/s** (0 = unlimited) |
+| 12  | 4  | `localSpeed`     | u32 LE -- local tx cap, **bits/s** (0 = unlimited)  |
+
+> Speed fields are **bits/sec** on the wire (verified live: a `remoteSpeed` of
+> 50,000,000 caps the server's download at ~50 Mbps). The `07` heartbeat's `bytes`
+> field is the peer's **actually-received** bytes for that ~1s interval - the
+> ground truth for UDP loss (sent on our NIC vs received by the peer).
 
 The server's command parser (`FUN_00408e84`) reads byte0, byte1, `u32@4`,
 `u32@8`, `u32@12` plus a trailing object pointer @0x10 -- consistent with the
@@ -65,8 +70,11 @@ Three regimes exist; the binary contains the crypto for all of them.
   - Client replies 48 bytes: username (plaintext, padded) + 16-byte digest.
   - Digest = `md5( password + md5( password + challenge ) )`.
 - **EC-SRP5 (RouterOS >= 6.43)** -- Curve25519-based, server replies
-  `03 00 00 00`. Exact field layout is only partially public; port by reference
-  to `btest-rs`'s working implementation. **[PUB]**
+  `03 00 00 00`. **Confirmed live:** with `/tool bandwidth-server set
+  authenticate=yes` on RouterOS 7.22.1, the server returns `03 00 00 00` (never
+  `02`/MD5) - modern RouterOS uses EC-SRP5 only. Exact field layout is partially
+  public; port by reference to `btest-rs`. blast detects `03` and reports it
+  clearly (EC-SRP5 not yet implemented). **[VERIFIED]**
 
 The binary also statically links the full **MS-CHAPv2 / MPPE** suite **[BIN]**:
 - `FUN_00461b50` = MS-CHAPv2 `GenerateAuthenticatorResponse`: emits
