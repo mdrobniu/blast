@@ -195,17 +195,17 @@ kernel module, x86-64, **unstripped**).
   not a fixed 2000**: it arrives through RouterOS's internal `nv::message` IPC from
   the listener that accepts the TCP control connection and spawns the btest worker.
 
-- **The one remaining gap for live UDP interop:** the server's UDP port. Capturing
-  the bytes the server streams on the TCP control *right after* `01 00 00 00` shows
-  that for a UDP test it sends a **14-byte `0x07` message** (e.g.
-  `07 fa 07 8e 00 00 01 00 00 00 00 00 00 00`) ahead of the regular 12-byte
-  heartbeats, and the distinguishing bytes vary per session (`fa 07 8e` vs
-  `fc 07 86`). That strongly indicates the server binds an **ephemeral** UDP port
-  and advertises it in this first message - so the `base` is not a fixed 2000+ value
-  but is handed to the client over TCP (matching `atoi(param[2])` in the userspace).
-  Decoding that 14-byte message's exact field layout (which 2 bytes are the port)
-  needs correlation against a known server port - a single `tcpdump` of a real
-  RouterOS<->RouterOS UDP btest would pin it down immediately. Everything else -
-  the per-datagram big-endian sequence, payload, `base+256+i` topology, SO_RCVBUF,
-  24-byte stats - is reverse-engineered and implemented; blast<->blast compat UDP
-  is fully sequenced and working.
+- **UDP base port - SOLVED (via packet capture).** A `tcpdump` of a real session
+  settled it: right after the `01 00 00 00` response, for a UDP test the server
+  sends a **2-byte big-endian UDP base port** on the TCP control connection
+  (e.g. `07 fd` = 2045). The base is **ephemeral** - the next free port up from the
+  server's "allocate UDP ports from" (2000), so it varies per test (2044/2045/2048…).
+  The server then binds `base`, streams from `base` to the client at **`base+256`**,
+  and expects the client's upload from `base+256` back to `base`. blast now reads
+  this 2-byte base during the handshake and binds `base+256` accordingly.
+  **[CAPTURE-VERIFIED]**
+- **Live result - full bidirectional UDP interop:** against the device, compat UDP
+  **download = 135.9 Mbps received**, **upload = ~475 Mbps** (confirmed by the
+  server's own `07` byte counter, e.g. `07 8e 00 00 01 00 00 00 10 92 88 03` =
+  0x03889210 bytes in second 1). Together with TCP (71/502 Mbps), **blast is now a
+  fully interoperable MikroTik btest client over both TCP and UDP.**

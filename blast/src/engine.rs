@@ -511,7 +511,14 @@ fn client_handshake_compat(ctrl: &mut std::net::TcpStream, r: &Resolved) -> Resu
         0x03 => bail!("server requires EC-SRP5 auth (RouterOS >= 6.43) - not yet implemented"),
         other => bail!("unexpected server response 0x{other:02x}"),
     }
-    // Compat client data ports start at 2257.
+    // For UDP, the server then sends a 2-byte big-endian base UDP port (it binds
+    // `base` and sends to the client at `base+256`; the base is ephemeral - the
+    // next free port from the server's "allocate UDP ports from", e.g. 2045).
+    if r.proto == Protocol::Udp {
+        let mut pb = [0u8; 2];
+        ctrl.read_exact(&mut pb).context("read udp base port")?;
+        return Ok(u16::from_be_bytes(pb));
+    }
     Ok(2257)
 }
 
@@ -528,11 +535,8 @@ fn client_udp_setup(r: &Resolved, server_ip: std::net::IpAddr, base: u16) -> Res
     for i in 0..r.workers {
         let (local_port_v, remote_port_v, send_hello) = match r.mode {
             Mode::Turbo => (0u16, base + i as u16, true),
-            Mode::Compat => (
-                COMPAT_UDP_BASE + 256 + i as u16,
-                COMPAT_UDP_BASE,
-                false,
-            ),
+            // `base` is the server-advertised UDP base (read during the handshake).
+            Mode::Compat => (base + 256 + i as u16, base, false),
         };
         let local: SocketAddr = match server_ip {
             std::net::IpAddr::V4(_) => format!("0.0.0.0:{local_port_v}").parse()?,
@@ -716,7 +720,13 @@ fn handle_session(
             reply[2..4].copy_from_slice(&1u16.to_le_bytes());
             ctrl.write_all(&reply)?;
         }
-        Mode::Compat => ctrl.write_all(&HELLO_OK)?, // no auth in v1 server
+        Mode::Compat => {
+            ctrl.write_all(&HELLO_OK)?; // no auth in v1 server
+            // UDP: advertise the base port the client must use (it binds base+256).
+            if r.proto == Protocol::Udp {
+                ctrl.write_all(&COMPAT_UDP_BASE.to_be_bytes())?;
+            }
+        }
     }
 
     // ---- Phase 4: complete (rendezvous / accept), then run ----

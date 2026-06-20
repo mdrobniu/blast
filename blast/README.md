@@ -111,8 +111,8 @@ blast speedtest HOST -P 4 -d 10             # client: ping + download + upload
 
 | Area | State |
 |------|-------|
-| btest compat - TCP single stream | verified vs live RouterOS |
-| btest compat - UDP / multi-connection | needs calibration vs real hardware |
+| btest compat - TCP | verified vs live RouterOS (71/502 Mbps) |
+| btest compat - UDP | verified vs live RouterOS (135 Mbps down / ~475 Mbps up) - reads the server's advertised base port + sequenced datagrams |
 | btest turbo - TCP/UDP, tx/rx/both, multi-worker | working, accelerated |
 | iperf3 client - TCP single/multi, fwd/reverse | verified vs `iperf3 -s` |
 | iperf3 client - UDP | data flows; server-side loss stats not yet matched |
