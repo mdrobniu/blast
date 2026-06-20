@@ -119,7 +119,9 @@ blast speedtest HOST -P 4 -d 10             # client: ping + download + upload
 | btest compat - rate limits | verified vs live device (TCP+UDP, both directions; wire speed field is bits/sec) |
 | btest compat - packet sizes | verified on the wire (64-1432 B datagrams) |
 | btest compat - peer-received / loss | shown live from the server's 07 heartbeats (sent vs really-received, loss%) |
-| btest compat - auth | detects the method; MD5 (RouterOS <6.43) implemented; EC-SRP5 (>=6.43, e.g. RouterOS 7.22) detected + reported, not yet implemented |
+| btest compat - auth | **MD5** (RouterOS <6.43) and **EC-SRP5** (>=6.43, Curve25519/mtwei) both implemented; EC-SRP5 verified vs live RouterOS 7.22 (authenticated TCP+UDP; wrong password rejected) |
+| btest compat - server (reverse) | a real RouterOS client tests *to* blast: UDP both directions (~460/314 Mbps) and single-connection TCP verified; multi-connection TCP server is a known gap |
+| automated tests | `cargo test` (proto + EC-SRP5 unit tests, 7 loopback integration tests) + `scripts/test-mikrotik.sh` |
 | btest turbo - TCP/UDP, tx/rx/both, multi-worker | working, accelerated |
 | iperf3 client - TCP single/multi, fwd/reverse | verified vs `iperf3 -s` |
 | iperf3 client - UDP | data flows; server-side loss stats not yet matched |
@@ -128,6 +130,44 @@ blast speedtest HOST -P 4 -d 10             # client: ping + download + upload
 | Ookla HTTP / official-CLI | documented honestly (closed/EULA) -- see SPEEDTEST.md |
 | io_uring backend (`--io-uring`) | implemented + selectable (turbo UDP TX) |
 | AF_XDP kernel-bypass tier | capability auto-detected (`blast caps`); full data path needs root + a supported NIC (design in README) |
+
+## Measuring real bandwidth (methodology)
+
+What you set changes what you measure. Findings from a live RouterOS device (a CRS328
+switch doing software btest):
+
+- **TCP self-limits — use it for "what can I actually push."** It needs no tuning and
+  reports usable throughput directly (here: 69 Mbps down / 486 Mbps up). For UDP, what
+  you *send* is not what the peer *gets* — blast shows both (peer-received from the `07`
+  heartbeats) plus loss%.
+- **UDP unlimited just overruns the receiver.** Sending 1.24 Gbps, the device ingested
+  only ~357 Mbps (71% loss). `tx` is meaningless there; **peer-received is the truth.**
+- **To find real UDP capacity, ramp `-b` and watch the loss "knee":**
+
+  | `-b` rate | sent | peer received | loss |
+  |---|---|---|---|
+  | 200M | 198 | 197 | 0.8% |
+  | 300M | 297 | 295 | 0.9% |  &lt;- clean capacity ~300 Mbps |
+  | 400M | 400 | 355 | 11%  |  &lt;- knee: loss appears |
+  | 500M | 499 | 422 | 15%  |
+
+  Clean capacity = the highest rate where loss stays ~&lt;1% (here ~300 Mbps).
+
+- **Use long durations (>= 10 s).** The peer's `07` heartbeats start ~1 s in, so short
+  tests under-count peer-received and *inflate* loss. The same `-b 100M` test reads
+  **d=4 -> 26% "loss" (artifact)** vs **d=10 -> 0.6% (real)**. 10-20 s is the sweet spot.
+- **Packet size:** bigger datagrams = fewer packets/sec = less pps-bound loss; tiny
+  (64 B) packets spike pps and lose more. Default 1432 B (safe under a 1500 MTU) is a
+  good baseline; raise toward the MTU for max throughput, lower only to stress pps.
+- **Expect run-to-run variation** with path load / device CPU (software btest on a
+  switch CPU is bursty) - average a few 10 s runs.
+
+Recipes:
+```bash
+blast client HOST --mode compat -t -D both -d 10          # usable throughput (TCP)
+blast client HOST --mode compat -u -D tx -b 300M -d 10    # UDP: ramp -b, read peer-rx + loss
+scripts/test-mikrotik.sh HOST [user] [password]           # automate the whole sweep
+```
 
 ## Acceleration tiers (UDP)
 
