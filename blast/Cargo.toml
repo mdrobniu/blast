@@ -1,0 +1,41 @@
+[package]
+name = "blast"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.74"
+description = "blast - high-throughput, hardware-accelerated bandwidth tester (MikroTik btest compatible + turbo mode)"
+license = "MIT OR Apache-2.0"
+repository = "https://example.invalid/blast"
+
+[[bin]]
+name = "blast"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+socket2 = { version = "0.5", features = ["all"] }
+crossbeam-utils = "0.8"
+md-5 = "0.10"
+ratatui = "0.29"
+serde_json = "1"
+ureq = { version = "2", features = ["tls"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+io-uring = "0.6"
+
+# A fast, predictable release profile for a throughput tool.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+debug = false
+strip = true
+
+# Keep dev builds runnable for loopback smoke tests without being glacial.
+[profile.dev]
+opt-level = 1

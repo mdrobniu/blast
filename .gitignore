@@ -1,0 +1,10 @@
+# MikroTik's proprietary binary - do not redistribute
+btest.exe
+*.exe
+# Rust build artifacts
+blast/target/
+target/
+# misc
+*.zip
+*.img
+*.img.zip
