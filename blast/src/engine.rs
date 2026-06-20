@@ -43,6 +43,7 @@ pub struct Resolved {
     pub user: String,
     pub password: String,
     pub io_uring: bool,
+    pub is_server: bool,
 }
 
 impl Resolved {
@@ -330,6 +331,30 @@ fn read_remote_07(ctrl: &std::net::TcpStream, stats: &Stats, stop: &AtomicBool) 
     }
 }
 
+/// Server side: emit a 12-byte `07` heartbeat (`07 00 00 00 [secs] [bytes]`,
+/// both u32 LE) every ~1s with the bytes we received that interval, so a real
+/// MikroTik client can display what the server actually got.
+fn write_remote_07(ctrl: &std::net::TcpStream, stats: &Stats, stop: &AtomicBool) {
+    let mut s: &std::net::TcpStream = ctrl;
+    let mut secs: u32 = 0;
+    let mut last_rx: u64 = 0;
+    let mut next = Instant::now() + Duration::from_secs(1);
+    while !stop.load(Ordering::Relaxed) {
+        std::thread::sleep(Duration::from_millis(100));
+        if Instant::now() >= next {
+            secs += 1;
+            next += Duration::from_secs(1);
+            let now = stats.snapshot();
+            let interval = now.rx_bytes.saturating_sub(last_rx);
+            last_rx = now.rx_bytes;
+            let msg = encode_stats(secs, interval.min(u32::MAX as u64) as u32);
+            if s.write_all(&msg).is_err() {
+                break;
+            }
+        }
+    }
+}
+
 fn run_jobs(
     socks: &[Socket],
     jobs: Vec<Job>,
@@ -387,12 +412,20 @@ fn run_jobs(
             stop_t.store(true, Ordering::Relaxed);
         });
 
-        // peer-received stats from the btest 07 heartbeats (compat control conn)
+        // btest 07 heartbeats on the compat control conn: the server emits its
+        // received-byte counts; the client consumes the peer's counts.
         if let Some(ref ctrl) = ctrl {
             if r.mode == Mode::Compat {
                 let stats = &stats;
                 let stop = &stop;
-                scope.spawn(move || read_remote_07(ctrl, stats, stop));
+                let server = r.is_server;
+                scope.spawn(move || {
+                    if server {
+                        write_remote_07(ctrl, stats, stop);
+                    } else {
+                        read_remote_07(ctrl, stats, stop);
+                    }
+                });
             }
         }
 
@@ -683,6 +716,7 @@ fn handle_session(
 ) -> Result<()> {
     ctrl.set_nodelay(true).ok();
     let mut r = base_r.clone();
+    r.is_server = true;
 
     // ---- Phase 1: read the client's request (do not release it yet) ----
     let header = match base_r.mode {
@@ -790,8 +824,9 @@ fn handle_session(
         Prebind::UdpCompat(socks) => server_udp_compat_connect(&r, socks, peer.ip())?,
         Prebind::Tcp(dl) => server_tcp_accept(&r, dl)?,
     };
-    let _ctrl_keepalive = ctrl;
-    run_jobs(&socks, jobs, &r, header, None)?;
+    // Hand the control connection to run_jobs so a compat UDP server can emit the
+    // 07 heartbeats (its received-byte counts) the real client needs to see.
+    run_jobs(&socks, jobs, &r, header, Some(ctrl))?;
     Ok(())
 }
 

@@ -317,6 +317,7 @@ fn resolve(common: &CommonArgs, mode: Mode, direction: Direction, duration: u64,
         user,
         password,
         io_uring: common.io_uring,
+        is_server: false,
     }
 }
 
