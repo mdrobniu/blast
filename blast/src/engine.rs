@@ -553,7 +553,17 @@ fn client_handshake_compat(ctrl: &mut std::net::TcpStream, r: &Resolved) -> Resu
                 bail!("authentication failed");
             }
         }
-        0x03 => bail!("server requires EC-SRP5 auth (RouterOS >= 6.43) - not yet implemented"),
+        0x03 => {
+            // EC-SRP5 (RouterOS >= 6.43): 4-message Curve25519 SRP exchange, then
+            // the server sends the usual 01 00 00 00 "ok" to start the test.
+            crate::ecsrp5::client_authenticate(ctrl, &r.user, &r.password)
+                .context("EC-SRP5 authentication")?;
+            let mut okb = [0u8; 4];
+            ctrl.read_exact(&mut okb).context("read post-auth ok")?;
+            if okb[0] != 0x01 {
+                bail!("server rejected after EC-SRP5 auth (0x{:02x})", okb[0]);
+            }
+        }
         other => bail!("unexpected server response 0x{other:02x}"),
     }
     // For UDP, the server then sends a 2-byte big-endian base UDP port (it binds

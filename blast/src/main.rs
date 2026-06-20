@@ -10,6 +10,7 @@
 // in full on purpose; not every variant is wired into a code path yet.
 #![allow(dead_code)]
 
+mod ecsrp5;
 mod engine;
 mod iperf;
 mod librespeed;
