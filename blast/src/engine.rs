@@ -500,30 +500,66 @@ pub fn run_client(r: &Resolved, server: SocketAddr) -> Result<()> {
 /// MikroTik-compatible TCP test: each connection does the control handshake and
 /// then carries the bulk data itself (real btest multiplexes data on the
 /// control socket, not on a separate data port).
+/// Add a TCP data connection's socket + jobs (splitting for Both).
+fn push_tcp_conn(
+    socks: &mut Vec<Socket>,
+    jobs: &mut Vec<Job>,
+    s: Socket,
+    worker: usize,
+    dir: Direction,
+    send_cap: u64,
+) -> Result<()> {
+    let primary = socks.len();
+    if matches!(dir, Direction::Both) {
+        let c = s.try_clone()?;
+        socks.push(s);
+        let sec = socks.len();
+        socks.push(c);
+        jobs.push(Job { worker, sock_idx: primary, op: Op::Send, cap: send_cap });
+        jobs.push(Job { worker, sock_idx: sec, op: Op::Recv, cap: 0 });
+    } else {
+        socks.push(s);
+        push_jobs(jobs, worker, primary, dir, send_cap);
+    }
+    Ok(())
+}
+
 fn run_client_compat_tcp(r: &Resolved, server: SocketAddr, header: String) -> Result<()> {
+    let n = r.workers.max(1);
     let mut socks: Vec<Socket> = Vec::new();
     let mut jobs: Vec<Job> = Vec::new();
-    let send_cap = per_worker(r.local_cap, r.workers, r.direction.local_sends());
-    for i in 0..r.workers {
-        let mut stream = std::net::TcpStream::connect(server)
-            .with_context(|| format!("connect {server}"))?;
-        stream.set_nodelay(true).ok();
-        let _ = client_handshake_compat(&mut stream, r)?;
-        let s = Socket::from(stream);
+    let send_cap = per_worker(r.local_cap, n, r.direction.local_sends());
+
+    // conn 0: control connection - full handshake yields the session token.
+    let mut c0 = std::net::TcpStream::connect(server)
+        .with_context(|| format!("connect {server}"))?;
+    c0.set_nodelay(true).ok();
+    let token = client_handshake_compat(&mut c0, r)?;
+    let s0 = Socket::from(c0);
+    net::tune_tcp_stream(&s0);
+    push_tcp_conn(&mut socks, &mut jobs, s0, 0, r.direction, send_cap)?;
+
+    // conns 1..n: data connections present `[token:2 LE][n:2 LE][12 zeros]`.
+    for i in 1..n {
+        let mut ci = std::net::TcpStream::connect(server)
+            .with_context(|| format!("connect data conn {i}"))?;
+        ci.set_nodelay(true).ok();
+        let mut hello = [0u8; 4];
+        ci.read_exact(&mut hello).context("data conn hello")?;
+        // Data-connection marker: [token:2 LE][0x0002][12 zeros] - the 0x0002 is a
+        // constant "data stream" tag (captured identical for every data conn).
+        let mut dmsg = [0u8; 16];
+        dmsg[0..2].copy_from_slice(&token.to_le_bytes());
+        dmsg[2..4].copy_from_slice(&2u16.to_le_bytes());
+        let _ = i;
+        ci.write_all(&dmsg)?;
+        // No ok on a data conn: the server starts the test immediately (streams
+        // data for download, consumes it for upload).
+        let s = Socket::from(ci);
         net::tune_tcp_stream(&s);
-        let primary = socks.len();
-        if matches!(r.direction, Direction::Both) {
-            let c = s.try_clone()?;
-            socks.push(s);
-            let sec = socks.len();
-            socks.push(c);
-            jobs.push(Job { worker: i, sock_idx: primary, op: Op::Send, cap: send_cap });
-            jobs.push(Job { worker: i, sock_idx: sec, op: Op::Recv, cap: 0 });
-        } else {
-            socks.push(s);
-            push_jobs(&mut jobs, i, primary, r.direction, send_cap);
-        }
+        push_tcp_conn(&mut socks, &mut jobs, s, i, r.direction, send_cap)?;
     }
+
     run_jobs(&socks, jobs, r, header, None)?;
     Ok(())
 }
@@ -570,11 +606,12 @@ fn client_handshake_compat(ctrl: &mut std::net::TcpStream, r: &Resolved) -> Resu
     };
     ctrl.write_all(&cmd.to_bytes())?;
 
-    // Server response: ok / md5-challenge / srp.
+    // Server response: ok / md5-challenge / srp. The final "ok" is `01 TOK_LO
+    // TOK_HI 00`; bytes 1-2 are the multi-connection session token (0 if single).
     let mut resp = [0u8; 4];
     ctrl.read_exact(&mut resp)?;
-    match resp[0] {
-        0x01 => {} // ok, no auth
+    let final_ok: [u8; 4] = match resp[0] {
+        0x01 => resp, // ok, no auth
         0x02 => {
             let mut challenge = [0u8; 16];
             ctrl.read_exact(&mut challenge)?;
@@ -585,10 +622,11 @@ fn client_handshake_compat(ctrl: &mut std::net::TcpStream, r: &Resolved) -> Resu
             if res[0] != 0x01 {
                 bail!("authentication failed");
             }
+            res
         }
         0x03 => {
             // EC-SRP5 (RouterOS >= 6.43): 4-message Curve25519 SRP exchange, then
-            // the server sends the usual 01 00 00 00 "ok" to start the test.
+            // the server sends the usual 01 .. "ok" to start the test.
             crate::ecsrp5::client_authenticate(ctrl, &r.user, &r.password)
                 .context("EC-SRP5 authentication")?;
             let mut okb = [0u8; 4];
@@ -596,9 +634,10 @@ fn client_handshake_compat(ctrl: &mut std::net::TcpStream, r: &Resolved) -> Resu
             if okb[0] != 0x01 {
                 bail!("server rejected after EC-SRP5 auth (0x{:02x})", okb[0]);
             }
+            okb
         }
         other => bail!("unexpected server response 0x{other:02x}"),
-    }
+    };
     // For UDP, the server then sends a 2-byte big-endian base UDP port (it binds
     // `base` and sends to the client at `base+256`; the base is ephemeral - the
     // next free port from the server's "allocate UDP ports from", e.g. 2045).
@@ -607,7 +646,8 @@ fn client_handshake_compat(ctrl: &mut std::net::TcpStream, r: &Resolved) -> Resu
         ctrl.read_exact(&mut pb).context("read udp base port")?;
         return Ok(u16::from_be_bytes(pb));
     }
-    Ok(2257)
+    // TCP: return the session token (used by extra data connections).
+    Ok(u16::from_le_bytes([final_ok[1], final_ok[2]]))
 }
 
 /// Compat uses MikroTik's deterministic connected-UDP scheme (from the
