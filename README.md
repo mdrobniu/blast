@@ -155,7 +155,7 @@ blast librespeed http://HOST:8080 -P 4      # LibreSpeed client
 | automated tests | `cargo test` (proto + EC-SRP5 unit tests, 10 loopback integration tests incl. multi-session) + `scripts/test-mikrotik.sh` |
 | btest turbo — TCP/UDP, tx/rx/both, multi-worker | working, accelerated |
 | iperf3 client — TCP single/multi, fwd/reverse | verified vs `iperf3 -s` |
-| iperf3 client — UDP | data flows; server-side loss stats not yet matched |
+| iperf3 client — UDP | verified vs `iperf3 -s`: loss + jitter match byte-for-byte (forward shows the server's count, reverse is measured locally) |
 | Ookla legacy speedtest (raw TCP) | client + server, self-tested (~27 Gbps loopback) |
 | LibreSpeed HTTP(S) | client + server, self-tested (~24 Gbps down / 7 Gbps up) |
 | io_uring backend (`--io-uring`) | implemented + selectable (turbo UDP TX) |

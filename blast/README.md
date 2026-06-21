@@ -127,7 +127,7 @@ blast speedtest HOST -P 4 -d 10             # client: ping + download + upload
 | automated tests | `cargo test` (proto + EC-SRP5 unit tests, 10 loopback integration tests incl. multi-session) + `scripts/test-mikrotik.sh` |
 | btest turbo - TCP/UDP, tx/rx/both, multi-worker | working, accelerated |
 | iperf3 client - TCP single/multi, fwd/reverse | verified vs `iperf3 -s` |
-| iperf3 client - UDP | data flows; server-side loss stats not yet matched |
+| iperf3 client - UDP | verified vs `iperf3 -s`: loss + jitter match byte-for-byte (forward shows the server's count, reverse is measured locally) |
 | Ookla legacy speedtest (raw TCP) | client + server, self-tested (~27 Gbps loopback) |
 | LibreSpeed HTTP(S) (`blast librespeed`) | client + server, self-tested (~24 Gbps down / 7 Gbps up) |
 | Ookla HTTP / official-CLI | documented honestly (closed/EULA) -- see SPEEDTEST.md |

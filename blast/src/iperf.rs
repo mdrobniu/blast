@@ -12,7 +12,7 @@ use anyhow::{bail, Context, Result};
 use socket2::Socket;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream, UdpSocket};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(unix)]
@@ -123,6 +123,7 @@ pub fn run_client(opts: &IperfOpts) -> Result<()> {
 
     let mut streams: Vec<Stream> = Vec::new();
     let mut final_snap = Snapshot::default();
+    let mut udp_losses: Vec<StreamLoss> = Vec::new();
 
     loop {
         let st = read_state(&mut ctrl)?;
@@ -132,7 +133,9 @@ pub fn run_client(opts: &IperfOpts) -> Result<()> {
             TEST_START => { /* timers init implicitly when streams run */ }
             TEST_RUNNING => {
                 // Client receives in reverse mode, otherwise sends.
-                final_snap = run_streams(&streams, opts, opts.reverse, header.clone())?;
+                let (snap, losses) = run_streams(&streams, opts, opts.reverse, header.clone())?;
+                final_snap = snap;
+                udp_losses = losses;
                 write_state(&mut ctrl, TEST_END)?; // client ends the test
                 // Signal EOF on the data streams so the server can finalize and
                 // send its results (it waits for every stream, esp. with -P>1).
@@ -143,8 +146,29 @@ pub fn run_client(opts: &IperfOpts) -> Result<()> {
                 }
             }
             EXCHANGE_RESULTS => {
-                write_json(&mut ctrl, &build_results(&final_snap, &streams))?;
-                let _server_results = read_json(&mut ctrl)?; // consume to advance
+                write_json(&mut ctrl, &build_results(&final_snap, &streams, &udp_losses))?;
+                let server_results = read_json(&mut ctrl)?;
+                // For forward UDP the server is the receiver and holds the real loss;
+                // for reverse UDP we measured it ourselves. Show whichever applies.
+                if opts.udp {
+                    let shown = if opts.reverse {
+                        let lost: u64 = udp_losses.iter().map(|l| l.lost).sum();
+                        let total: u64 = udp_losses.iter().map(|l| l.total).sum();
+                        let jit = udp_losses.iter().map(|l| l.jitter).fold(0.0, f64::max);
+                        (total > 0).then_some((lost, total, jit))
+                    } else {
+                        udp_loss_from_results(&server_results).filter(|(_, t, _)| *t > 0)
+                    };
+                    if let Some((lost, total, jitter)) = shown {
+                        println!(
+                            "  datagrams: {} lost / {} ({:.2}% loss), jitter {:.3} ms",
+                            lost,
+                            total,
+                            lost as f64 / total as f64 * 100.0,
+                            jitter * 1000.0
+                        );
+                    }
+                }
             }
             DISPLAY_RESULTS => {
                 write_state(&mut ctrl, IPERF_DONE)?;
@@ -193,7 +217,7 @@ fn build_params(o: &IperfOpts) -> serde_json::Value {
     p
 }
 
-fn build_results(snap: &Snapshot, streams: &[Stream]) -> serde_json::Value {
+fn build_results(snap: &Snapshot, streams: &[Stream], losses: &[StreamLoss]) -> serde_json::Value {
     use serde_json::json;
     let n = streams.len().max(1) as u64;
     let per = (snap.tx_bytes + snap.rx_bytes) / n;
@@ -201,13 +225,18 @@ fn build_results(snap: &Snapshot, streams: &[Stream]) -> serde_json::Value {
     let arr: Vec<serde_json::Value> = (0..streams.len())
         .map(|i| {
             let id = if i == 0 { 1 } else { i + 2 };
+            // When we were the UDP receiver, report the loss/jitter we measured.
+            let (errors, packets, jitter) = match losses.get(i) {
+                Some(l) if l.total > 0 => (l.lost, l.total, l.jitter),
+                _ => (0, (snap.tx_pkts + snap.rx_pkts) / n, 0.0),
+            };
             json!({
                 "id": id,
                 "bytes": per,
                 "retransmits": 0,
-                "jitter": 0.0,
-                "errors": 0,
-                "packets": (snap.tx_pkts + snap.rx_pkts) / n,
+                "jitter": jitter,
+                "errors": errors,
+                "packets": packets,
                 "start_time": 0.0,
                 "end_time": snap.elapsed,
             })
@@ -225,6 +254,45 @@ fn build_results(snap: &Snapshot, streams: &[Stream]) -> serde_json::Value {
 struct Stream {
     sock: Socket,
     udp: bool,
+}
+
+/// Receiver-side UDP loss/jitter accumulator (one per stream), filled by `udp_recv`.
+#[derive(Default)]
+struct UdpRx {
+    highest: AtomicU32,    // highest sequence number seen
+    count: AtomicU64,      // datagrams received
+    jitter_bits: AtomicU64, // RFC1889 jitter in seconds, stored as f64 bits
+}
+struct StreamLoss {
+    lost: u64,
+    total: u64,
+    jitter: f64,
+}
+impl UdpRx {
+    fn result(&self) -> StreamLoss {
+        let total = self.highest.load(Ordering::Relaxed) as u64;
+        let count = self.count.load(Ordering::Relaxed);
+        StreamLoss {
+            lost: total.saturating_sub(count),
+            total,
+            jitter: f64::from_bits(self.jitter_bits.load(Ordering::Relaxed)),
+        }
+    }
+}
+
+/// Sum the UDP loss/jitter out of an iperf3 results JSON (the peer's `streams`).
+fn udp_loss_from_results(v: &serde_json::Value) -> Option<(u64, u64, f64)> {
+    let streams = v.get("streams")?.as_array()?;
+    let (mut lost, mut total, mut jitter) = (0u64, 0u64, 0.0f64);
+    for s in streams {
+        lost += s.get("errors").and_then(|x| x.as_u64()).unwrap_or(0);
+        total += s.get("packets").and_then(|x| x.as_u64()).unwrap_or(0);
+        let j = s.get("jitter").and_then(|x| x.as_f64()).unwrap_or(0.0);
+        if j > jitter {
+            jitter = j;
+        }
+    }
+    Some((lost, total, jitter))
 }
 
 fn create_streams(o: &IperfOpts, cookie: &[u8; COOKIE_SIZE]) -> Result<Vec<Stream>> {
@@ -264,8 +332,9 @@ fn run_streams(
     o: &IperfOpts,
     client_recv: bool,
     header: String,
-) -> Result<Snapshot> {
+) -> Result<(Snapshot, Vec<StreamLoss>)> {
     let stats = Stats::new(streams.len().max(1));
+    let udp_rx: Vec<UdpRx> = (0..streams.len().max(1)).map(|_| UdpRx::default()).collect();
     let stop = AtomicBool::new(false);
     for s in streams {
         let _ = s.sock.set_read_timeout(Some(Duration::from_millis(250)));
@@ -285,13 +354,14 @@ fn run_streams(
             let len = o.len;
             let udp = st.udp;
             let sock = &st.sock;
+            let rx = &udp_rx[i];
             sc.spawn(move || {
                 sys::pin_to_core(i);
                 match (udp, client_recv) {
                     (false, false) => tcp_send(sock, stats, i, stop, len),
                     (false, true) => tcp_recv(sock, stats, i, stop, len),
                     (true, false) => udp_send(sock, stats, i, stop, len, per_stream_bw),
-                    (true, true) => udp_recv(sock, stats, i, stop, len),
+                    (true, true) => udp_recv(sock, stats, i, stop, len, rx),
                 }
             });
         }
@@ -317,7 +387,8 @@ fn run_streams(
         let f = stats.snapshot();
         rep.finish(&f);
     });
-    Ok(stats.snapshot())
+    let losses = udp_rx.iter().map(|r| r.result()).collect();
+    Ok((stats.snapshot(), losses))
 }
 
 fn is_transient(e: &std::io::Error) -> bool {
@@ -386,16 +457,41 @@ fn udp_send(sock: &Socket, stats: &Stats, idx: usize, stop: &AtomicBool, len: us
     }
 }
 
-fn udp_recv(sock: &Socket, stats: &Stats, idx: usize, stop: &AtomicBool, len: usize) {
+fn udp_recv(sock: &Socket, stats: &Stats, idx: usize, stop: &AtomicBool, len: usize, rx: &UdpRx) {
     let mut buf = vec![std::mem::MaybeUninit::<u8>::uninit(); len.max(65536)];
+    let mut jitter = 0.0f64;
+    let mut prev_transit = 0.0f64;
+    let mut have_prev = false;
     while !stop.load(Ordering::Relaxed) {
         match sock.recv(&mut buf) {
             Ok(0) => continue,
-            Ok(n) => stats.add_rx(idx, n as u64, 1),
+            Ok(n) => {
+                stats.add_rx(idx, n as u64, 1);
+                if n >= 12 {
+                    // header: sec, usec, pcount (all BE); first 12 bytes are initialized.
+                    let h = unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const u8, 12) };
+                    let sec = u32::from_be_bytes([h[0], h[1], h[2], h[3]]);
+                    let usec = u32::from_be_bytes([h[4], h[5], h[6], h[7]]);
+                    let pcount = u32::from_be_bytes([h[8], h[9], h[10], h[11]]);
+                    rx.count.fetch_add(1, Ordering::Relaxed);
+                    rx.highest.fetch_max(pcount, Ordering::Relaxed);
+                    // RFC1889 jitter from the one-way transit delta.
+                    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs_f64();
+                    let sent = sec as f64 + usec as f64 * 1e-6;
+                    let transit = now - sent;
+                    if have_prev {
+                        let d = (transit - prev_transit).abs();
+                        jitter += (d - jitter) / 16.0;
+                    }
+                    prev_transit = transit;
+                    have_prev = true;
+                }
+            }
             Err(ref e) if is_transient(e) => continue,
             Err(_) => break,
         }
     }
+    rx.jitter_bits.store(jitter.to_bits(), Ordering::Relaxed);
 }
 
 // Touch fd traits so cfg(unix)-only imports aren't flagged unused on other OSes.

@@ -1,6 +1,8 @@
 //! End-to-end loopback tests: spawn `blast` as a server, run it as a client,
 //! and assert data actually flowed. Each test uses a distinct port so they can
 //! run in parallel. Run with `cargo test --release` (debug is slow for UDP).
+//! On few-core machines these spawn many processes at once; if one flakes under
+//! the load, `cargo test --release -- --test-threads=2` runs them with headroom.
 
 use std::process::{Command, Stdio};
 use std::thread;
@@ -18,7 +20,7 @@ fn run(server: &[&str], client: &[&str]) -> serde_json::Value {
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn server");
-    thread::sleep(Duration::from_millis(600));
+    thread::sleep(Duration::from_millis(900));
     let out = Command::new(blast())
         .args(client)
         .output()
