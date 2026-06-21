@@ -551,7 +551,6 @@ fn run_client_compat_tcp(r: &Resolved, server: SocketAddr, header: String) -> Re
         let mut dmsg = [0u8; 16];
         dmsg[0..2].copy_from_slice(&token.to_le_bytes());
         dmsg[2..4].copy_from_slice(&2u16.to_le_bytes());
-        let _ = i;
         ci.write_all(&dmsg)?;
         // No ok on a data conn: the server starts the test immediately (streams
         // data for download, consumes it for upload).

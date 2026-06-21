@@ -86,6 +86,34 @@ fn compat_udp_rate_limited() {
 }
 
 #[test]
+fn compat_tcp_multiconn_rx() {
+    // Multi-connection download: blast client (-P 4) <-> blast server, token-coordinated.
+    let j = run(
+        &["server", "--mode", "compat", "-l", "127.0.0.1:23108"],
+        &["client", "127.0.0.1", "-p", "23108", "--mode", "compat", "-t", "-D", "rx", "-P", "4", "-d", "2", "--json"],
+    );
+    assert!(num(&j, "rx_bytes") > 0.0, "compat tcp -P4 download flowed: {j}");
+}
+
+#[test]
+fn compat_tcp_multiconn_tx() {
+    let j = run(
+        &["server", "--mode", "compat", "-l", "127.0.0.1:23109"],
+        &["client", "127.0.0.1", "-p", "23109", "--mode", "compat", "-t", "-D", "tx", "-P", "4", "-d", "2", "--json"],
+    );
+    assert!(num(&j, "tx_bytes") > 0.0, "compat tcp -P4 upload flowed: {j}");
+}
+
+#[test]
+fn turbo_udp_multiworker() {
+    let j = run(
+        &["server", "--mode", "turbo", "-l", "127.0.0.1:23110"],
+        &["client", "127.0.0.1", "-p", "23110", "--mode", "turbo", "-u", "-D", "tx", "-P", "4", "-d", "2", "--json"],
+    );
+    assert!(num(&j, "tx_bytes") > 0.0, "turbo udp -P4 flowed: {j}");
+}
+
+#[test]
 fn speedtest_loopback() {
     let j = run(
         &["speedtest", "--server", "-l", "127.0.0.1:23106"],

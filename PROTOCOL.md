@@ -217,3 +217,27 @@ kernel module, x86-64, **unstripped**).
   server's own `07` byte counter, e.g. `07 8e 00 00 01 00 00 00 10 92 88 03` =
   0x03889210 bytes in second 1). Together with TCP (71/502 Mbps), **blast is now a
   fully interoperable MikroTik btest client over both TCP and UDP.**
+
+## 9. Multi-connection TCP (connection-count > 1) - CAPTURE-VERIFIED
+
+RouterOS opens multiple TCP connections per test (default **20**). The extra
+connections are coordinated by a session token (RE'd via a fake-server capture):
+
+- **Control connection (conn 0):** the usual handshake; the command's `conn_count`
+  byte is N. On success the server's "ok" is **`01 TOK_LO TOK_HI 00`** - bytes 1-2
+  are a per-session **token** (0 means single-connection).
+- **Data connections (1..N-1):** each reads the 4-byte hello, then sends a 16-byte
+  marker **`[token:2 LE][0x0002][12 zeros]`**. The `0x0002` is a constant data-stream
+  tag (identical for every data conn - it is *not* the count or the index). The
+  server replies with no "ok"; data simply flows.
+- **Data flows on all N connections** (conn 0 included). For an upload, the server
+  reports its aggregate received bytes via the `07` heartbeats on conn 0's otherwise
+  idle reverse direction.
+- **Distinguishing a data conn from a control conn:** a command's byte 2 is the
+  random flag (0/1); a data-conn marker's byte 2 is `0x02`. blast keys on that.
+
+blast implements both ends. Verified vs live RouterOS: client `-P 4..20` download
+~78 Mbps / upload ~410 Mbps; as a server, a real `cc=20` client downloads ~397 Mbps
+and uploads ~159 Mbps. blast<->blast multi-connection scales to ~32 Gbps (loopback).
+(Bidirectional `both` multi-conn flows data but leaves the peer's upload counter at
+0 - conn 0 carries data in both directions, so there is no idle lane for `07`.)

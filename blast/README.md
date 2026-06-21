@@ -120,8 +120,9 @@ blast speedtest HOST -P 4 -d 10             # client: ping + download + upload
 | btest compat - packet sizes | verified on the wire (64-1432 B datagrams) |
 | btest compat - peer-received / loss | shown live from the server's 07 heartbeats (sent vs really-received, loss%) |
 | btest compat - auth | **MD5** (RouterOS <6.43) and **EC-SRP5** (>=6.43, Curve25519/mtwei) both implemented; EC-SRP5 verified vs live RouterOS 7.22 (authenticated TCP+UDP; wrong password rejected) |
-| btest compat - server (reverse) | a real RouterOS client tests *to* blast: UDP both directions (~460/314 Mbps) and single-connection TCP verified; multi-connection TCP server is a known gap |
-| automated tests | `cargo test` (proto + EC-SRP5 unit tests, 7 loopback integration tests) + `scripts/test-mikrotik.sh` |
+| btest compat - multi-connection TCP (`-P N`) | full token-coordinated multi-stream, client + server. Verified vs live RouterOS: client `-P 4..20` (~78 Mbps down / ~410 Mbps up), server with a real `cc=20` client (~397 down / ~159 up). `both`-direction multi-conn flows data but leaves the peer upload counter at 0 (documented) |
+| btest compat - server (reverse) | a real RouterOS client tests *to* blast: UDP both directions (~460/314 Mbps) and TCP single + multi-connection verified ("test unsupported" gone) |
+| automated tests | `cargo test` (proto + EC-SRP5 unit tests, 10 loopback integration tests incl. multi-session) + `scripts/test-mikrotik.sh` |
 | btest turbo - TCP/UDP, tx/rx/both, multi-worker | working, accelerated |
 | iperf3 client - TCP single/multi, fwd/reverse | verified vs `iperf3 -s` |
 | iperf3 client - UDP | data flows; server-side loss stats not yet matched |
@@ -159,12 +160,18 @@ switch doing software btest):
 - **Packet size:** bigger datagrams = fewer packets/sec = less pps-bound loss; tiny
   (64 B) packets spike pps and lose more. Default 1432 B (safe under a 1500 MTU) is a
   good baseline; raise toward the MTU for max throughput, lower only to stress pps.
+- **Multiple connections (`-P N`) for TCP.** A single TCP stream is window/RTT-bound;
+  RouterOS itself defaults to 20. More streams fill a fat or lossy path - here download
+  rose 69 -> 80 Mbps from `-P 1` to `-P 20`, and parallel upload reached ~410 Mbps.
+  Match the device default (`-P 20`) to compare like-for-like. UDP scales with `-P`
+  workers instead (each its own port pair).
 - **Expect run-to-run variation** with path load / device CPU (software btest on a
   switch CPU is bursty) - average a few 10 s runs.
 
 Recipes:
 ```bash
 blast client HOST --mode compat -t -D both -d 10          # usable throughput (TCP)
+blast client HOST --mode compat -t -D rx -P 20 -d 10      # multi-stream TCP (RouterOS default)
 blast client HOST --mode compat -u -D tx -b 300M -d 10    # UDP: ramp -b, read peer-rx + loss
 scripts/test-mikrotik.sh HOST [user] [password]           # automate the whole sweep
 ```

@@ -47,4 +47,7 @@ for r in 50M 100M 300M 1G unlimited; do
 done
 echo "[ UDP upload packet-size sweep @ -b 100M ]"
 for s in 256 512 1000 1432; do run "UDP up size=$s" -u tx --size "$s" -b 100M; done
+echo "[ multi-session sweep: TCP, varying connection-count ]"
+for p in 1 4 8 16 20; do run "TCP rx -P $p" -t rx -P "$p"; done
+for p in 4 16; do run "TCP tx -P $p" -t tx -P "$p"; done
 echo "done."

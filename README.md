@@ -25,8 +25,10 @@ cd blast && cargo build --release
 ```
 
 Validated highlights: ~39 Gbps UDP (GSO) / ~27 Gbps TCP on 4 cores (loopback);
-matches `iperf3 -s`'s own counters; interoperates with a live RouterOS device over
-TCP (compat mode).
+matches `iperf3 -s`'s own counters; **full bidirectional interop with a live RouterOS
+device over TCP and UDP** - both directions (blast as client and as server),
+EC-SRP5/MD5 authentication, rate limits, packet sizes, and token-coordinated
+multi-connection TCP (`-P 20`, the RouterOS default).
 
 > Note: MikroTik's proprietary `btest.exe` is intentionally **not** included.
 
