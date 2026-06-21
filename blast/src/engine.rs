@@ -724,10 +724,53 @@ fn connect_tcp_data(server: SocketAddr, mode: Mode) -> Result<Socket> {
 // SERVER
 // ===================================================================
 
+/// Collects the extra TCP data connections of a multi-connection compat session.
+/// The control connection registers a token; data connections (which present that
+/// token) are routed to it via a channel.
+#[derive(Clone, Default)]
+struct Registry {
+    inner: std::sync::Arc<
+        std::sync::Mutex<(
+            std::collections::HashMap<u16, std::sync::mpsc::Sender<std::net::TcpStream>>,
+            u16,
+        )>,
+    >,
+}
+impl Registry {
+    fn register(&self) -> (u16, std::sync::mpsc::Receiver<std::net::TcpStream>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut g = self.inner.lock().unwrap();
+        g.1 = g.1.wrapping_add(1);
+        if g.1 == 0 {
+            g.1 = 1;
+        }
+        let token = g.1;
+        g.0.insert(token, tx);
+        (token, rx)
+    }
+    fn route(&self, token: u16, stream: std::net::TcpStream) {
+        let mut stream = Some(stream);
+        for _ in 0..20 {
+            let tx = self.inner.lock().unwrap().0.get(&token).cloned();
+            if let Some(tx) = tx {
+                if let Some(s) = stream.take() {
+                    let _ = tx.send(s);
+                }
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+    fn unregister(&self, token: u16) {
+        self.inner.lock().unwrap().0.remove(&token);
+    }
+}
+
 pub fn run_server(r: &Resolved, listen: SocketAddr) -> Result<()> {
     let listener = net::tcp_listener(listen, r.caps.reuseport)?;
     let std_listener: std::net::TcpListener = listener.into();
     ui::banner_server(&r.caps, listen);
+    let registry = Registry::default();
 
     loop {
         let (ctrl, peer) = match std_listener.accept() {
@@ -740,8 +783,9 @@ pub fn run_server(r: &Resolved, listen: SocketAddr) -> Result<()> {
         // Handle each session on its own thread so a running test never blocks
         // new clients (the compat wire command carries no duration).
         let rc = r.clone();
+        let reg = registry.clone();
         std::thread::spawn(move || {
-            if let Err(e) = handle_session(&rc, ctrl, peer, listen) {
+            if let Err(e) = handle_session(&rc, ctrl, peer, listen, reg) {
                 eprintln!("session from {peer} ended: {e:#}");
             }
         });
@@ -753,6 +797,7 @@ fn handle_session(
     mut ctrl: std::net::TcpStream,
     peer: SocketAddr,
     listen: SocketAddr,
+    registry: Registry,
 ) -> Result<()> {
     ctrl.set_nodelay(true).ok();
     let mut r = base_r.clone();
@@ -783,6 +828,13 @@ fn handle_session(
             ctrl.write_all(&HELLO_OK)?; // server speaks first
             let mut cmd = [0u8; 16];
             ctrl.read_exact(&mut cmd)?;
+            // A data connection of a multi-connection session sends
+            // [token:2 LE][0x0002][zeros] - byte 2 == 0x02 distinguishes it from a
+            // command (whose byte 2 is the random flag, 0/1). Route it to its session.
+            if cmd[2] == 0x02 {
+                registry.route(u16::from_le_bytes([cmd[0], cmd[1]]), ctrl);
+                return Ok(());
+            }
             let c = Command::from_bytes(&cmd)?;
             r.proto = c.proto;
             r.direction = c.direction.mirror();
@@ -804,28 +856,44 @@ fn handle_session(
         r.gso_segment = r.udp_datagram as u16;
     }
 
-    // Compat TCP carries data on the control connection itself (real btest);
-    // handle it directly instead of binding a separate data port.
+    // Compat TCP carries data on the connections themselves (real btest). For
+    // connection-count > 1 the control connection hands back a session token and
+    // the client opens the rest, which arrive via the registry.
     if base_r.mode == Mode::Compat && r.proto == Protocol::Tcp {
-        ctrl.write_all(&HELLO_OK)?; // release
-        let s = Socket::from(ctrl);
-        net::tune_tcp_stream(&s);
         let send_cap = per_worker(r.local_cap, r.workers, r.direction.local_sends());
-        let (socks, jobs) = if matches!(r.direction, Direction::Both) {
-            let c = s.try_clone()?;
-            (
-                vec![s, c],
-                vec![
-                    Job { worker: 0, sock_idx: 0, op: Op::Send, cap: send_cap },
-                    Job { worker: 0, sock_idx: 1, op: Op::Recv, cap: 0 },
-                ],
-            )
+        let mut conns: Vec<std::net::TcpStream> = Vec::new();
+        if r.workers > 1 {
+            let (token, rx) = registry.register();
+            ctrl.write_all(&[0x01, (token & 0xff) as u8, (token >> 8) as u8, 0x00])?;
+            conns.push(ctrl);
+            for _ in 1..r.workers {
+                match rx.recv_timeout(Duration::from_secs(5)) {
+                    Ok(s) => conns.push(s),
+                    Err(_) => break, // a stream never arrived; run with what we have
+                }
+            }
+            registry.unregister(token);
         } else {
-            let mut jobs = Vec::new();
-            push_jobs(&mut jobs, 0, 0, r.direction, send_cap);
-            (vec![s], jobs)
+            ctrl.write_all(&HELLO_OK)?; // single connection: plain ok
+            conns.push(ctrl);
+        }
+        // Client-upload (server receive-only): the control conn's reverse direction
+        // is idle, so send the 07 heartbeats there for the client to see what we
+        // received. For download conn0 carries data - don't interleave 07 into it.
+        let ctrl_07 = if r.direction == Direction::Rx {
+            conns.first().and_then(|c| c.try_clone().ok())
+        } else {
+            None
         };
-        return run_jobs(&socks, jobs, &r, header, None).map(|_| ());
+        let mut socks: Vec<Socket> = Vec::new();
+        let mut jobs: Vec<Job> = Vec::new();
+        for (i, c) in conns.into_iter().enumerate() {
+            c.set_nodelay(true).ok();
+            let s = Socket::from(c);
+            net::tune_tcp_stream(&s);
+            push_tcp_conn(&mut socks, &mut jobs, s, i, r.direction, send_cap)?;
+        }
+        return run_jobs(&socks, jobs, &r, header, ctrl_07).map(|_| ());
     }
 
     // ---- Phase 2: pre-bind data resources BEFORE the releasing ack ----
