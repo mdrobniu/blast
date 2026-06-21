@@ -14,6 +14,7 @@ mod ecsrp5;
 mod engine;
 mod iperf;
 mod iperf2;
+mod spdtst;
 mod librespeed;
 mod net;
 mod proto;
@@ -53,6 +54,8 @@ enum Cmd {
     Iperf(IperfArgs),
     /// Run a classic iperf2 client/server (what Ubiquiti airOS Speed Test uses).
     Iperf2(Iperf2Args),
+    /// Run the Ubiquiti airOS Speed Test protocol (spdtst.ko), client/server.
+    Spdtst(SpdtstArgs),
     /// Run an Ookla-legacy speedtest (client, or `--server` to listen).
     Speedtest(SpeedtestArgs),
     /// Run a LibreSpeed HTTP test (client URL, or `--server` to listen).
@@ -165,6 +168,37 @@ struct Iperf2Args {
     /// Target bitrate bits/sec (suffixes K/M/G; 0 = unlimited).
     #[arg(short = 'b', long, default_value = "0")]
     bandwidth: String,
+    /// Force plain line output.
+    #[arg(long)]
+    plain: bool,
+    /// Emit a JSON summary only.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct SpdtstArgs {
+    /// Peer host (client mode). Ignored with --server.
+    #[arg(default_value = "0.0.0.0")]
+    host: String,
+    /// Run as the slave (listen) instead of the master.
+    #[arg(short = 's', long)]
+    server: bool,
+    /// UDP port (blast<->blast transport).
+    #[arg(short = 'p', long, default_value_t = 16569)]
+    port: u16,
+    /// Test duration in seconds (master).
+    #[arg(short = 'd', long, default_value_t = 10)]
+    duration: u32,
+    /// Direction: rx, tx, or dx (both).
+    #[arg(short = 'D', long, default_value = "tx")]
+    direction: String,
+    /// Datagram payload size in bytes.
+    #[arg(long, default_value_t = 1472)]
+    datasize: u16,
+    /// Rate hint in Mbit/s (0 = unlimited).
+    #[arg(short = 'b', long, default_value_t = 0)]
+    datarate: u16,
     /// Force plain line output.
     #[arg(long)]
     plain: bool,
@@ -468,6 +502,36 @@ fn main() -> Result<()> {
                 caps,
             };
             iperf2::run(&opts)
+        }
+        Cmd::Spdtst(a) => {
+            let addr = if a.server {
+                format!("0.0.0.0:{}", a.port).parse().context("parse listen address")?
+            } else {
+                resolve_addr(&a.host, a.port)?
+            };
+            let direction = match a.direction.as_str() {
+                "rx" => spdtst::Dir::Rx,
+                "dx" | "both" => spdtst::Dir::Dx,
+                _ => spdtst::Dir::Tx,
+            };
+            let ui_kind = if a.json {
+                ui::UiKind::Json
+            } else if a.plain || !std::io::stdout().is_terminal() {
+                ui::UiKind::Plain
+            } else {
+                ui::UiKind::Tui
+            };
+            let opts = spdtst::SpdtstOpts {
+                addr,
+                server: a.server,
+                duration: a.duration,
+                direction,
+                datasize: a.datasize,
+                datarate: a.datarate,
+                ui: ui_kind,
+                caps,
+            };
+            spdtst::run(&opts)
         }
         Cmd::Speedtest(a) => {
             if a.server {

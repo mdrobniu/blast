@@ -10,10 +10,10 @@
 **blast** is a high-throughput, hardware-accelerated, multi-protocol bandwidth tester
 written in Rust. It began as a clean-room reverse-engineering of MikroTik's `btest.exe`
 and grew into a single tool that speaks **MikroTik btest**, **iperf3**, **iperf2**
-(the Ubiquiti airOS Speed Test protocol), the **Ookla-legacy** speedtest protocol, and
-**LibreSpeed** — while pinning every kernel/NIC offload it can find: UDP GSO/GRO,
-`sendmmsg`/`recvmmsg`, `SO_REUSEPORT`, hugepages, CPU pinning, io_uring, and (detected)
-AF_XDP.
+(airOS's CLI tool), the **Ubiquiti airOS Speed Test** (`spdtst`), the **Ookla-legacy**
+speedtest protocol, and **LibreSpeed** — while pinning every kernel/NIC offload it can
+find: UDP GSO/GRO, `sendmmsg`/`recvmmsg`, `SO_REUSEPORT`, hugepages, CPU pinning,
+io_uring, and (detected) AF_XDP.
 
 ```
  blast turbo client -> 10.0.0.2  [Udp Tx]            accel: linux x8 REUSEPORT GSO GRO mmsg
@@ -170,7 +170,8 @@ blast librespeed http://HOST:8080 -P 4      # LibreSpeed client
 | btest turbo — TCP/UDP, tx/rx/both, multi-worker | working, accelerated |
 | iperf3 client — TCP single/multi, fwd/reverse | verified vs `iperf3 -s` |
 | iperf3 client — UDP | verified vs `iperf3 -s`: loss + jitter match byte-for-byte (forward shows the server's count, reverse is measured locally) |
-| iperf2 / airOS Speed Test (`blast iperf2`) | client + server, TCP + UDP; RE'd from airOS 6.x firmware (iperf 2.0.4) and verified wire-compatible with stock `iperf`(2) both directions (UDP loss/jitter match exactly). Live airOS-radio test pending device credentials |
+| iperf2 (`blast iperf2`) - airOS CLI tool | client + server, TCP + UDP; RE'd from airOS 6.x firmware (iperf 2.0.4), verified wire-compatible with stock `iperf`(2) both directions (UDP loss/jitter match exactly) **and against a live airOS radio** (~9.9 Mbit/s, matching) |
+| Ubiquiti airOS Speed Test (`blast spdtst`) | the UI Tools->Speed Test = `spdtst.ko` (NOT iperf); RE'd via Ghidra + live radio (UDP, magic `0xDA51A514`). Wire format + PARAMS/RESULTS implemented, blast<->blast working; it's a bridge-path link tester so the data-phase codes are provisional vs real radios -- see [SPDTST.md](SPDTST.md) |
 | Ookla legacy speedtest (raw TCP) | client + server, self-tested (~27 Gbps loopback) |
 | LibreSpeed HTTP(S) | client + server, self-tested (~24 Gbps down / 7 Gbps up) |
 | io_uring backend (`--io-uring`) | implemented + selectable (turbo UDP TX) |
@@ -238,6 +239,8 @@ blast/scripts/test-mikrotik.sh HOST [user] [password]     # automate the whole s
   Ghidra (the Windows client *and* the RouterOS firmware: userspace `btest` + the
   `btest.ko` kernel data plane), the EC-SRP5 auth and multi-connection TCP exchanges,
   plus live-device validation.
+- **[`SPDTST.md`](SPDTST.md)** — the Ubiquiti airOS **Speed Test** (`spdtst.ko`)
+  protocol, reverse-engineered via Ghidra + a live radio (it's *not* iperf).
 - **[`blast/SPEEDTEST.md`](blast/SPEEDTEST.md)** — the speedtest / LibreSpeed details.
 
 > MikroTik's proprietary `btest.exe` is intentionally **not** included — everything here

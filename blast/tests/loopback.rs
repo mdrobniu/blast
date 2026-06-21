@@ -137,6 +137,26 @@ fn iperf2_tcp_loopback() {
 }
 
 #[test]
+fn spdtst_loopback() {
+    // Ubiquiti airOS Speed Test protocol (spdtst.ko wire format), blast<->blast.
+    let mut srv = Command::new(blast())
+        .args(["spdtst", "--server", "-p", "23112"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn spdtst slave");
+    thread::sleep(Duration::from_millis(700));
+    let out = Command::new(blast())
+        .args(["spdtst", "127.0.0.1", "-p", "23112", "-d", "2", "-b", "200", "--plain"])
+        .output()
+        .expect("run spdtst master");
+    let _ = srv.kill();
+    let _ = srv.wait();
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(s.contains("peer received"), "spdtst exchanged PARAMS/DATA/RESULTS: {s}");
+}
+
+#[test]
 fn speedtest_loopback() {
     let j = run(
         &["speedtest", "--server", "-l", "127.0.0.1:23106"],
