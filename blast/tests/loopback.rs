@@ -116,6 +116,27 @@ fn turbo_udp_multiworker() {
 }
 
 #[test]
+fn iperf2_tcp_loopback() {
+    // Classic iperf2 (airOS Speed Test protocol): blast client -> blast --server.
+    let mut srv = Command::new(blast())
+        .args(["iperf2", "--server", "-p", "23111"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn iperf2 server");
+    thread::sleep(Duration::from_millis(700));
+    let out = Command::new(blast())
+        .args(["iperf2", "127.0.0.1", "-p", "23111", "-d", "2", "--json"])
+        .output()
+        .expect("run iperf2 client");
+    let _ = srv.kill();
+    let _ = srv.wait();
+    // The client streams data; success = it ran to completion (non-empty summary).
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(s.contains('{') || s.contains("Gbps") || s.contains("Mbps"), "iperf2 ran: {s}");
+}
+
+#[test]
 fn speedtest_loopback() {
     let j = run(
         &["speedtest", "--server", "-l", "127.0.0.1:23106"],

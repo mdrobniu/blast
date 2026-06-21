@@ -13,6 +13,7 @@
 mod ecsrp5;
 mod engine;
 mod iperf;
+mod iperf2;
 mod librespeed;
 mod net;
 mod proto;
@@ -50,6 +51,8 @@ enum Cmd {
     Client(ClientArgs),
     /// Run an iperf3-compatible client (interops with `iperf3 -s`).
     Iperf(IperfArgs),
+    /// Run a classic iperf2 client/server (what Ubiquiti airOS Speed Test uses).
+    Iperf2(Iperf2Args),
     /// Run an Ookla-legacy speedtest (client, or `--server` to listen).
     Speedtest(SpeedtestArgs),
     /// Run a LibreSpeed HTTP test (client URL, or `--server` to listen).
@@ -126,6 +129,40 @@ struct IperfArgs {
     #[arg(long, default_value_t = 0)]
     len: usize,
     /// Target bitrate in bits/sec (suffixes K/M/G; 0 = unlimited).
+    #[arg(short = 'b', long, default_value = "0")]
+    bandwidth: String,
+    /// Force plain line output.
+    #[arg(long)]
+    plain: bool,
+    /// Emit a JSON summary only.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct Iperf2Args {
+    /// Server host (client mode). Ignored with --server.
+    #[arg(default_value = "0.0.0.0")]
+    host: String,
+    /// Run as a server (listen) instead of a client.
+    #[arg(short = 's', long)]
+    server: bool,
+    /// Port (airOS/iperf2 default 5001).
+    #[arg(short = 'p', long, default_value_t = 5001)]
+    port: u16,
+    /// Use UDP instead of TCP.
+    #[arg(short = 'u', long)]
+    udp: bool,
+    /// Test duration in seconds (client).
+    #[arg(short = 'd', long, default_value_t = 10)]
+    duration: u32,
+    /// Parallel streams (client).
+    #[arg(short = 'P', long, default_value_t = 1)]
+    parallel: usize,
+    /// Block size in bytes (0 = auto: 128 KiB TCP, 1470 UDP).
+    #[arg(long, default_value_t = 0)]
+    len: usize,
+    /// Target bitrate bits/sec (suffixes K/M/G; 0 = unlimited).
     #[arg(short = 'b', long, default_value = "0")]
     bandwidth: String,
     /// Force plain line output.
@@ -402,6 +439,35 @@ fn main() -> Result<()> {
                 caps,
             };
             iperf::run_client(&opts)
+        }
+        Cmd::Iperf2(a) => {
+            let addr = if a.server {
+                format!("{}:{}", if a.host == "0.0.0.0" { "0.0.0.0" } else { &a.host }, a.port)
+                    .parse()
+                    .context("parse listen address")?
+            } else {
+                resolve_addr(&a.host, a.port)?
+            };
+            let bw_bits = parse_bitrate(&a.bandwidth)? * 8;
+            let ui_kind = if a.json {
+                ui::UiKind::Json
+            } else if a.plain || !std::io::stdout().is_terminal() {
+                ui::UiKind::Plain
+            } else {
+                ui::UiKind::Tui
+            };
+            let opts = iperf2::Iperf2Opts {
+                addr,
+                server: a.server,
+                udp: a.udp,
+                duration: a.duration,
+                parallel: a.parallel.max(1),
+                len: a.len,
+                bandwidth: bw_bits,
+                ui: ui_kind,
+                caps,
+            };
+            iperf2::run(&opts)
         }
         Cmd::Speedtest(a) => {
             if a.server {
