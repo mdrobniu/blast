@@ -5,8 +5,8 @@
 `blast` is a clean-room, from-scratch reimplementation born from reverse-engineering
 MikroTik's `btest.exe` (see [`../PROTOCOL.md`](../PROTOCOL.md)), rebuilt as a modern
 Rust tool that saturates links using every kernel/NIC offload available - and that
-also speaks **iperf3** and (soon) **Ookla/speedtest** so one binary covers your whole
-bandwidth-testing toolbox.
+also speaks **iperf3**, **Ookla-legacy speedtest**, and **LibreSpeed**, so one binary
+covers your whole bandwidth-testing toolbox.
 
 ```
  blast turbo client -> 10.0.0.2  [Udp Tx]            accel: linux x8 REUSEPORT GSO GRO mmsg
@@ -47,13 +47,15 @@ BSD / Windows get a portable baseline (plain sockets + threads + big buffers).
 ## Protocols & modes
 
 ### 1. MikroTik btest (`--mode compat`)
-Wire-compatible with RouterOS / the original `btest.exe`. **Verified against a live
-RouterOS device:** single-stream TCP download/upload interoperate today.
+Wire-compatible with RouterOS / the original `btest.exe`, **verified against a live
+RouterOS 7.22 device:** TCP + UDP, download/upload/both, rate limits, packet sizes,
+MD5 **and** EC-SRP5 authentication, and multi-connection TCP - as a client and a server.
 
 ```bash
-blast client 192.0.2.1 --mode compat -t -D rx -d 10   # download from a MikroTik
-blast client 192.0.2.1 --mode compat -t -D tx -d 10   # upload to a MikroTik
-blast client 192.0.2.1 --mode compat -t -D rx --user me --password secret  # MD5 auth
+blast client 192.0.2.1 --mode compat -t -D rx -P 20 -d 10   # download (20 streams)
+blast client 192.0.2.1 --mode compat -t -D tx -d 10         # upload to a MikroTik
+blast client 192.0.2.1 --mode compat -u -D tx -b 300M -d 10 # UDP at a 300 Mbit/s cap
+blast client 192.0.2.1 --mode compat -t -D rx --user me --password secret  # MD5/EC-SRP5 auth
 ```
 
 ### 2. blast turbo (`--mode turbo`, default)
