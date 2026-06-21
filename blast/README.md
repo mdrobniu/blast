@@ -5,8 +5,9 @@
 `blast` is a clean-room, from-scratch reimplementation born from reverse-engineering
 MikroTik's `btest.exe` (see [`../PROTOCOL.md`](../PROTOCOL.md)), rebuilt as a modern
 Rust tool that saturates links using every kernel/NIC offload available - and that
-also speaks **iperf3**, **Ookla-legacy speedtest**, and **LibreSpeed**, so one binary
-covers your whole bandwidth-testing toolbox.
+also speaks **iperf3**, **iperf2** (the Ubiquiti airOS Speed Test protocol),
+**Ookla-legacy speedtest**, and **LibreSpeed**, so one binary covers your whole
+bandwidth-testing toolbox.
 
 ```
  blast turbo client -> 10.0.0.2  [Udp Tx]            accel: linux x8 REUSEPORT GSO GRO mmsg
@@ -128,6 +129,7 @@ blast speedtest HOST -P 4 -d 10             # client: ping + download + upload
 | btest turbo - TCP/UDP, tx/rx/both, multi-worker | working, accelerated |
 | iperf3 client - TCP single/multi, fwd/reverse | verified vs `iperf3 -s` |
 | iperf3 client - UDP | verified vs `iperf3 -s`: loss + jitter match byte-for-byte (forward shows the server's count, reverse is measured locally) |
+| iperf2 / airOS Speed Test (`blast iperf2`) | client + server, TCP + UDP; RE'd from airOS 6.x firmware (iperf 2.0.4), verified wire-compatible with stock `iperf`(2) both directions (UDP loss/jitter match exactly). Live airOS-radio test pending device credentials |
 | Ookla legacy speedtest (raw TCP) | client + server, self-tested (~27 Gbps loopback) |
 | LibreSpeed HTTP(S) (`blast librespeed`) | client + server, self-tested (~24 Gbps down / 7 Gbps up) |
 | Ookla HTTP / official-CLI | documented honestly (closed/EULA) -- see SPEEDTEST.md |

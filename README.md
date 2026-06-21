@@ -9,10 +9,11 @@
 
 **blast** is a high-throughput, hardware-accelerated, multi-protocol bandwidth tester
 written in Rust. It began as a clean-room reverse-engineering of MikroTik's `btest.exe`
-and grew into a single tool that speaks **MikroTik btest**, **iperf3**, the
-**Ookla-legacy** speedtest protocol, and **LibreSpeed** — while pinning every kernel/NIC
-offload it can find: UDP GSO/GRO, `sendmmsg`/`recvmmsg`, `SO_REUSEPORT`, hugepages,
-CPU pinning, io_uring, and (detected) AF_XDP.
+and grew into a single tool that speaks **MikroTik btest**, **iperf3**, **iperf2**
+(the Ubiquiti airOS Speed Test protocol), the **Ookla-legacy** speedtest protocol, and
+**LibreSpeed** — while pinning every kernel/NIC offload it can find: UDP GSO/GRO,
+`sendmmsg`/`recvmmsg`, `SO_REUSEPORT`, hugepages, CPU pinning, io_uring, and (detected)
+AF_XDP.
 
 ```
  blast turbo client -> 10.0.0.2  [Udp Tx]            accel: linux x8 REUSEPORT GSO GRO mmsg
@@ -26,8 +27,9 @@ CPU pinning, io_uring, and (detected) AF_XDP.
 
 ## Highlights
 
-- **Four protocols, one binary.** MikroTik btest (`compat`), a native `turbo` mode,
-  iperf3, Ookla-legacy speedtest, and LibreSpeed — pick the wire your peer speaks.
+- **Many protocols, one binary.** MikroTik btest (`compat`), a native `turbo` mode,
+  iperf3, **iperf2** (Ubiquiti airOS Speed Test), Ookla-legacy speedtest, and
+  LibreSpeed — pick the wire your peer speaks.
 - **Genuinely fast.** ~39 Gbps UDP (GSO) and ~27 Gbps TCP on a 4-core box (loopback),
   share-nothing one-worker-per-core with lock-free per-core stats.
 - **Real MikroTik interop, proven on hardware.** Verified against a live RouterOS 7.22
@@ -105,7 +107,19 @@ blast iperf 10.0.0.5 -R -d 10          # TCP download (reverse)
 blast iperf 10.0.0.5 -u -b 1G -d 10    # UDP at 1 Gbit/s
 ```
 
-### 4. Ookla-legacy speedtest & LibreSpeed (`blast speedtest` / `blast librespeed`)
+### 4. iperf2 / Ubiquiti airOS Speed Test (`blast iperf2 ...`)
+Classic **iperf2** (iperf 2.0.x) — what Ubiquiti **airOS** radios run for their built-in
+*Tools -> Speed Test* (RE'd from firmware: `/bin/iperf` is iperf 2.0.4). Client **and**
+server, TCP + UDP, default port 5001. **Verified wire-compatible with stock `iperf`(2)**
+both directions (TCP counters match; UDP loss/jitter match exactly).
+
+```bash
+blast iperf2 --server                   # be the iperf2 endpoint (airOS tests against this)
+blast iperf2 192.0.2.9 -P 4 -d 10       # 4-stream TCP upload to an airOS radio / iperf -s
+blast iperf2 192.0.2.9 -u -b 100M -d 10 # UDP, prints the server's loss + jitter report
+```
+
+### 5. Ookla-legacy speedtest & LibreSpeed (`blast speedtest` / `blast librespeed`)
 The Ookla legacy raw-TCP protocol (`HI`/`PING`/`DOWNLOAD`/`UPLOAD`) and the LibreSpeed
 HTTP(S) protocol — both client and server. Reports ping/jitter/download/upload like
 speedtest.net. See [`blast/SPEEDTEST.md`](blast/SPEEDTEST.md) for the protocols and an
@@ -156,6 +170,7 @@ blast librespeed http://HOST:8080 -P 4      # LibreSpeed client
 | btest turbo — TCP/UDP, tx/rx/both, multi-worker | working, accelerated |
 | iperf3 client — TCP single/multi, fwd/reverse | verified vs `iperf3 -s` |
 | iperf3 client — UDP | verified vs `iperf3 -s`: loss + jitter match byte-for-byte (forward shows the server's count, reverse is measured locally) |
+| iperf2 / airOS Speed Test (`blast iperf2`) | client + server, TCP + UDP; RE'd from airOS 6.x firmware (iperf 2.0.4) and verified wire-compatible with stock `iperf`(2) both directions (UDP loss/jitter match exactly). Live airOS-radio test pending device credentials |
 | Ookla legacy speedtest (raw TCP) | client + server, self-tested (~27 Gbps loopback) |
 | LibreSpeed HTTP(S) | client + server, self-tested (~24 Gbps down / 7 Gbps up) |
 | io_uring backend (`--io-uring`) | implemented + selectable (turbo UDP TX) |

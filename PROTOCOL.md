@@ -241,3 +241,33 @@ blast implements both ends. Verified vs live RouterOS: client `-P 4..20` downloa
 and uploads ~159 Mbps. blast<->blast multi-connection scales to ~32 Gbps (loopback).
 (Bidirectional `both` multi-conn flows data but leaves the peer's upload counter at
 0 - conn 0 carries data in both directions, so there is no idle lane for `07`.)
+
+## 10. Ubiquiti airOS "Speed Test" = classic iperf2 - FIRMWARE-VERIFIED
+
+Ubiquiti airMAX (airOS) radios have a UI **Tools -> Speed Test** that measures
+device-to-device throughput. Reverse-engineering the airOS 6.x firmware
+(`UBNT XM.ar7240.v6.1.8`, squashfs rootfs at offset 1231551) settles how it works:
+
+- `/bin/iperf` is **`iperf version 2.0.4 (7 Apr 2008) pthreads`** - classic **iperf2**.
+- The UI test (`sptest.js` + `ubntbox`) runs that iperf over the management network;
+  it is an ordinary iperf2 throughput test (default **TCP port 5001**).
+
+iperf2 wire protocol (implemented as `blast iperf2`, verified against stock `iperf`):
+
+- **TCP**: a normal unidirectional test is just a **raw data stream** - the receiver
+  times the bytes; there is no per-block header (the 24-byte `client_hdr` only appears
+  for `-d`/`-r` dual tests). So an upload test = connect to :5001 and stream.
+- **UDP**: every datagram begins with a 12-byte `UDP_datagram` header
+  (`int32 id`, `uint32 sec`, `uint32 usec`, network order). `id` counts up; the client
+  ends the test by sending datagrams with a **negative `id`**. The server then returns
+  a **`server_hdr`** report packet: a 12/16-byte datagram echo, then network int32
+  `flags`(0x80000000 bit), `total_len1`, `total_len2`, `stop_sec`, `stop_usec`,
+  `error_cnt`(lost), `outorder_cnt`, `datagrams`(total), `jitter1`, `jitter2`. Locate
+  the struct by its flags word (the echo's FIN id also has the high bit, so skip the
+  first 12 bytes).
+
+Verified wire-compatible with stock `iperf`(2) both directions: TCP counters match
+(15-18 Gbps loopback); UDP loss+jitter match exactly (`168/17114 0.98% 0.003ms` ==
+iperf's own). The actual airOS `iperf 2.0.4` binary runs under `qemu-mips-static`
+(`-L <rootfs>`) for byte-level checks, though its uClibc threads need a real radio to
+run a full test. Live test against an airOS device is pending working credentials.
